@@ -1,0 +1,19 @@
+discord:
+  token: "YOUR_DISCORD_BOT_TOKEN"
+  channel_id: "YOUR_DISCORD_CHANNEL_ID"
+aws:
+  ami_id: "ami-058a8a5ab36292159"
+  security_group_id: "sg-0fc7195e53e52e2a8"
+  ebs_volume_id: "vol-035f8591d26424cd0"
+  instance_types:
+    - m5.large
+    - m5a.large
+    - m6a.large
+    - m6i.large
+  subnet_id: "subnet-209b945a"
+  region: "us-east-2"
+  key_pair_name: "minecraft-spot-key"
+minecraft:
+  port: 25565
+  rcon_port: 25575
+  rcon_password: "YourRconPasswordHere" 
