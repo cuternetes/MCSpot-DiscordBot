@@ -1,4 +1,4 @@
-`import os
+import os
 import time
 import asyncio
 import discord
@@ -17,6 +17,7 @@ from datetime import datetime
 from contextlib import contextmanager, asynccontextmanager
 from types import SimpleNamespace
 import yaml
+import shutil
 
 # --- LOGGING SETUP ---
 logging.basicConfig(
@@ -32,9 +33,16 @@ logger = logging.getLogger('minecraft_bot')
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
+# Determine environment (prod or dev)
+BOT_ENV = os.environ.get("BOT_ENV", "prod").lower()
+
 # Discord
-DISCORD_TOKEN = config["discord"]["token"]
-CHANNEL_ID = int(config["discord"]["channel_id"])
+if BOT_ENV == "dev":
+    DISCORD_TOKEN = config["discord"].get("token_DEV", config["discord"]["token"])
+    CHANNEL_ID = int(config["discord"].get("channel_id_DEV", config["discord"]["channel_id"]))
+else:
+    DISCORD_TOKEN = config["discord"]["token"]
+    CHANNEL_ID = int(config["discord"]["channel_id"])
 
 # AWS Resources
 AMI_ID = config["aws"]["ami_id"]
@@ -44,6 +52,7 @@ INSTANCE_TYPES = config["aws"]["instance_types"]
 SUBNET_ID = config["aws"]["subnet_id"]
 AWS_REGION = config["aws"]["region"]
 KEY_PAIR_NAME = config["aws"]["key_pair_name"]
+KEY_FILE_PATH = os.path.expanduser(f"~/.ssh/{KEY_PAIR_NAME}.pem")
 
 # Minecraft
 MINECRAFT_PORT = config["minecraft"]["port"]
@@ -296,26 +305,28 @@ async def get_instance_status():
         return "unknown"
 
 async def ensure_key_pair():
-    """Ensure SSH key pair exists, create if it doesn't"""
+    """Ensure SSH key pair exists in AWS and locally. Create in AWS if missing. Abort if AWS key exists but local private key is missing."""
     try:
         client = await aws.get_client('ec2')
         try:
+            # Try to describe the key pair in AWS
             await client.describe_key_pairs(KeyNames=[KEY_PAIR_NAME])
-            logger.info(f"SSH key pair {KEY_PAIR_NAME} already exists")
+            logger.info(f"SSH key pair {KEY_PAIR_NAME} already exists in AWS")
+            # Check if the private key file exists locally
+            if not os.path.exists(KEY_FILE_PATH):
+                logger.error(f"Key pair '{KEY_PAIR_NAME}' exists in AWS but private key file is missing locally at {KEY_FILE_PATH}. Cannot recover private key. Please delete the key pair in AWS or specify a new key_pair_name in config.yaml.")
+                return False
             return True
         except Exception:
-            # Key doesn't exist, create it
-            logger.info(f"Creating new SSH key pair: {KEY_PAIR_NAME}")
+            # Key doesn't exist in AWS, so create it
+            logger.info(f"Creating new SSH key pair in AWS: {KEY_PAIR_NAME}")
             response = await client.create_key_pair(KeyName=KEY_PAIR_NAME)
-            
-            # Save private key to file
             private_key = response['KeyMaterial']
-            key_file = f"{KEY_PAIR_NAME}.pem"
-            with open(key_file, 'w') as f:
+            os.makedirs(os.path.dirname(KEY_FILE_PATH), exist_ok=True)
+            with open(KEY_FILE_PATH, 'w') as f:
                 f.write(private_key)
-            os.chmod(key_file, 0o600)
-            
-            logger.info(f"SSH key pair created and saved to {key_file}")
+            os.chmod(KEY_FILE_PATH, 0o600)
+            logger.info(f"SSH key pair created in AWS and saved to {KEY_FILE_PATH}")
             return True
         finally:
             await client.__aexit__(None, None, None)
@@ -328,27 +339,22 @@ async def get_ssh_connection_info():
     instance = await get_minecraft_instance()
     if not instance:
         return None
-        
     try:
         state = await get_instance_state(instance)
         if state != 'running':
             return None
-            
         username = "ec2-user"  # Default user for Amazon Linux 2023
         ip_address = await get_instance_property(instance, 'public_ip_address')
-        key_file = f"{KEY_PAIR_NAME}.pem"
-         
-        if not os.path.exists(key_file):
+        if not os.path.exists(KEY_FILE_PATH):
+            # If the key file is missing locally, try to create it (will only succeed if AWS keypair doesn't exist yet)
             await ensure_key_pair()
-            
         if not ip_address:
             return None
-            
         return {
             'username': username,
             'ip': ip_address,
-            'key_file': key_file,
-            'command': f"ssh -i {key_file} {username}@{ip_address}"
+            'key_file': KEY_FILE_PATH,
+            'command': f"ssh -i {KEY_FILE_PATH} {username}@{ip_address}"
         }
     except Exception as e:
         logger.error(f"Error getting SSH connection info: {e}")
@@ -361,6 +367,12 @@ async def start_spot_instance():
     logger.info("=== Starting Minecraft Server ===")
     channel = bot.get_channel(CHANNEL_ID)
 
+    # Ensure the key pair exists in AWS before launching the instance
+    if not await ensure_key_pair():
+        await channel.send(f"❌ Could not create or verify the EC2 key pair '{KEY_PAIR_NAME}'. Aborting.")
+        is_starting_or_stopping = False
+        return
+
     # Check if instance already exists
     existing_instance = await get_minecraft_instance()
     if existing_instance:
@@ -369,6 +381,7 @@ async def start_spot_instance():
         await channel.send(f"❌ Server instance already exists (status: {status})")
         return
 
+    spot_request_id = None  # Ensure this is always defined for the finally block
     try:
         # Get EC2 client
         ec2 = await aws.get_client('ec2')
@@ -457,7 +470,7 @@ async def start_spot_instance():
             ssh_ready = False
             for attempt in range(1, 13):  # 2 minute timeout
                 logger.info(f"[SSH Check] Attempt {attempt}: Checking SSH access on {ssh_target}")
-                ssh_cmd = f"ssh -i {KEY_PAIR_NAME}.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 ec2-user@{ssh_target} 'echo SSH_OK'"
+                ssh_cmd = f"ssh -i {KEY_FILE_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 ec2-user@{ssh_target} 'echo SSH_OK'"
                 result = await run_command(ssh_cmd)
                 logger.info(f"[SSH Check] Attempt {attempt} result: returncode={result.returncode}, stdout={result.stdout.strip()}, stderr={result.stderr.strip()}")
                 if result.returncode == 0 and 'SSH_OK' in result.stdout:
@@ -472,7 +485,7 @@ async def start_spot_instance():
 
             # Mount volume and start server
             await channel.send("🔧 Starting Minecraft server setup (step-by-step)...")
-            ssh_cmd_base = f"ssh -i {KEY_PAIR_NAME}.pem -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@{ssh_target}"
+            ssh_cmd_base = f"ssh -i {KEY_FILE_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@{ssh_target}"
             commands = [
                 ("Install Java, screen, and netcat", "sudo dnf install -y java-21-amazon-corretto-devel screen nc"),
                 ("Create mount directory", "sudo mkdir -p /mnt/minecraft"),
@@ -636,6 +649,43 @@ async def get_spot_price(instance_type, region=AWS_REGION):
         logger.error(f"Error fetching spot price for {instance_type}: {e}")
         return None
 
+def is_ssh_available():
+    """Check if the 'ssh' command is available in the system PATH."""
+    return shutil.which('ssh') is not None
+
+async def ensure_ssh_installed():
+    """Ensure the 'ssh' command is available. Attempt to install if missing."""
+    if is_ssh_available():
+        return True
+    logger.warning("'ssh' command not found. Attempting to install...")
+    # Try to install with dnf (Amazon Linux, Fedora, RHEL)
+    proc = await asyncio.create_subprocess_shell(
+        'sudo dnf install -y openssh-clients',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0 and is_ssh_available():
+        logger.info("Successfully installed openssh-clients with dnf.")
+        return True
+    # Try to install with apt-get (Debian/Ubuntu)
+    proc = await asyncio.create_subprocess_shell(
+        'sudo apt-get update && sudo apt-get install -y openssh-client',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0 and is_ssh_available():
+        logger.info("Successfully installed openssh-client with apt-get.")
+        return True
+    logger.error("Failed to install 'ssh' command. Please install it manually.")
+    return False
+
+# Call ensure_ssh_installed at startup
+async def bot_startup_checks():
+    if not await ensure_ssh_installed():
+        logger.error("'ssh' command is required but could not be installed. Exiting.")
+        raise SystemExit(1)
 
 # --- DISCORD COMMANDS ---
 @bot.command()
@@ -877,7 +927,7 @@ async def debug(ctx):
         )
         
         # Check SSH connectivity
-        ssh_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_PAIR_NAME}.pem ec2-user@{ip_address} 'echo SSH_OK'"
+        ssh_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_FILE_PATH} ec2-user@{ip_address} 'echo SSH_OK'"
         ssh_result = await run_command(ssh_cmd)
         ssh_status = "✅ Connected" if ssh_result.returncode == 0 else "❌ Not accessible"
         
@@ -888,7 +938,7 @@ async def debug(ctx):
         )
         
         # Check mount status
-        mount_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_PAIR_NAME}.pem ec2-user@{ip_address} 'mountpoint -q /mnt/minecraft && echo MOUNTED || echo NOT_MOUNTED'"
+        mount_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_FILE_PATH} ec2-user@{ip_address} 'mountpoint -q /mnt/minecraft && echo MOUNTED || echo NOT_MOUNTED'"
         mount_result = await run_command(mount_cmd)
         mount_status = "✅ Mounted" if mount_result.stdout.strip() == "MOUNTED" else "❌ Not mounted"
         
@@ -1101,6 +1151,7 @@ async def cleanup():
 
 if __name__ == "__main__":
     try:
+        asyncio.run(bot_startup_checks())
         bot.run(DISCORD_TOKEN)
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt")

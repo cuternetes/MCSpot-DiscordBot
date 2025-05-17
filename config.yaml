@@ -1,6 +1,8 @@
 discord:
   token: "YOUR_DISCORD_BOT_TOKEN"
   channel_id: "YOUR_DISCORD_CHANNEL_ID"
+  token_DEV: "YOUR_DISCORD_BOT_TOKEN_DEV"
+  channel_id_DEV: "YOUR_DISCORD_CHANNEL_ID_DEV"
 aws:
   ami_id: "ami-058a8a5ab36292159"
   security_group_id: "sg-0fc7195e53e52e2a8"

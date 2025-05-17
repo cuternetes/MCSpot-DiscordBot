@@ -64,6 +64,9 @@ minecraft:
   rcon_password: "YourRconPasswordHere"
 ```
 
+> **Note:** The SSH private key for the EC2 instance will be saved in your `~/.ssh` directory (e.g., `/home/youruser/.ssh/`).
+> Make sure the user running the bot (including under systemd) has read access to this file and directory.
+
 ### 3. Run the Setup Script
 
 ```bash
@@ -129,6 +132,8 @@ sudo journalctl -u minecraft-discord-bot -f
 - The bot is optimized for low-memory instances (e.g., t3a.nano).
 - The systemd service will auto-restart the bot if it crashes.
 - Make sure your AWS credentials and permissions are set up properly.
+- The SSH key for the EC2 instance is saved in `~/.ssh/` (e.g., `/home/youruser/.ssh/`).
+- If running as a systemd service, ensure the service user has access to this directory and file.
 
 ---
 
