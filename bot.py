@@ -130,7 +130,7 @@ async def get_online_players(instance):
 
 async def warn_minecraft_players(instance):
     logger.info("Sending warning to Minecraft players about spot interruption")
-    msg = "§c[Server] Spot instance interruption! Server will shut down in 30 seconds. Get to a safe place and log out!"
+    msg = ":grey_exclamation: **Spot Instance Interruption Detected!**\nAWS needs this server. You have 2 minutes to save your work!\nThe server will shut down automatically."
     await rcon_command(instance, f'say {msg}')
 
 async def wait_for_volume_attachment(client, volume_id, max_attempts=30):
@@ -369,7 +369,7 @@ async def start_spot_instance():
 
     # Ensure the key pair exists in AWS before launching the instance
     if not await ensure_key_pair():
-        await channel.send(f"❌ Could not create or verify the EC2 key pair '{KEY_PAIR_NAME}'. Aborting.")
+        await channel.send(f":x: Could not create or verify the EC2 key pair '{KEY_PAIR_NAME}'. Aborting.")
         is_starting_or_stopping = False
         return
 
@@ -378,7 +378,7 @@ async def start_spot_instance():
     if existing_instance:
         status = await get_instance_status()
         logger.warning(f"Instance already exists with status: {status}")
-        await channel.send(f"❌ Server instance already exists (status: {status})")
+        await channel.send(f":x: Server instance already exists (status: {status})")
         return
 
     spot_request_id = None  # Ensure this is always defined for the finally block
@@ -389,12 +389,12 @@ async def start_spot_instance():
             # Check EBS volume availability
             volumes = await ec2.describe_volumes(VolumeIds=[EBS_VOLUME_ID])
             if volumes['Volumes'][0]['State'] != 'available':
-                await channel.send(f"❌ EBS volume is not available (current state: {volumes['Volumes'][0]['State']})")
-                await channel.send("ℹ️ The EBS volume is likely still being dismounted. Please wait a minute and try again.")
+                await channel.send(f":x: EBS volume is not available (current state: {volumes['Volumes'][0]['State']})")
+                await channel.send(":grey_question: The EBS volume is likely still being dismounted. Please wait a minute and try again.")
                 return
 
             # Request spot instance
-            await channel.send("🔄 Requesting spot instance...")
+            await channel.send(":arrows_counterclockwise: Requesting spot instance...")
             response = await ec2.request_spot_instances(
                 InstanceCount=1,
                 LaunchSpecification={
@@ -409,16 +409,16 @@ async def start_spot_instance():
             spot_request_id = response["SpotInstanceRequests"][0]["SpotInstanceRequestId"]
 
             # Wait for spot instance fulfillment
-            await channel.send("⏳ Waiting for spot instance to be fulfilled...")
+            await channel.send(":hourglass: Waiting for spot instance to be fulfilled...")
             instance_id = await wait_for_spot_fulfillment(ec2, spot_request_id)
             if not instance_id:
-                await channel.send("❌ Spot instance request failed or timed out")
+                await channel.send(":x: Spot instance request failed or timed out")
                 return
 
             # Fetch the instance type of the fulfilled spot instance
             instance_desc = await ec2.describe_instances(InstanceIds=[instance_id])
             instance_type = instance_desc['Reservations'][0]['Instances'][0]['InstanceType']
-            await channel.send(f"🖥️ Spot instance fulfilled! Selected instance type: `{instance_type}`")
+            await channel.send(f":computer: Spot instance fulfilled! Selected instance type: `{instance_type}`")
 
             # Tag the instance
             await ec2.create_tags(
@@ -430,7 +430,7 @@ async def start_spot_instance():
             )
 
             # Attach EBS volume
-            await channel.send("💾 Attaching storage volume...")
+            await channel.send(":floppy_disk: Attaching storage volume...")
             await ec2.attach_volume(
                 VolumeId=EBS_VOLUME_ID,
                 InstanceId=instance_id,
@@ -440,13 +440,13 @@ async def start_spot_instance():
                 raise Exception("Volume attachment timed out")
 
             # Wait for instance to be ready
-            await channel.send("🚀 Waiting for instance to start...")
+            await channel.send(":rocket: Waiting for instance to start...")
             instance = await get_minecraft_instance()
             if not await wait_for_instance_state(instance, 'running'):
                 raise Exception("Instance failed to reach running state")
 
             # Wait for and get the public IP
-            await channel.send("🌐 Waiting for public IP assignment...")
+            await channel.send(":globe_with_meridians: Waiting for public IP assignment...")
             ip_address = None
             for _ in range(30):  # Try for up to 2.5 minutes
                 await instance.reload()
@@ -458,14 +458,14 @@ async def start_spot_instance():
             if not ip_address:
                 raise Exception("Failed to get instance public IP address")
 
-            await channel.send(f"✨ Instance is running with IP: `{ip_address}`")
+            await channel.send(f":sparkles: Instance is running with IP: `{ip_address}`")
 
             # Get the public DNS name for SSH
             public_dns = await get_instance_property(instance, 'public_dns_name')
             ssh_target = public_dns if public_dns else ip_address
 
             # Wait a bit for SSH to be available
-            await channel.send("⏳ Waiting 30 seconds before attempting SSH access...")
+            await channel.send(":hourglass: Waiting 30 seconds before attempting SSH access...")
             await asyncio.sleep(30)
             ssh_ready = False
             for attempt in range(1, 13):  # 2 minute timeout
@@ -479,12 +479,12 @@ async def start_spot_instance():
                     break
                 await asyncio.sleep(5)
             if not ssh_ready:
-                await channel.send("❌ SSH connection could not be established after multiple attempts. Please check the instance and security group settings.")
+                await channel.send(":x: SSH connection could not be established after multiple attempts. Please check the instance and security group settings.")
                 logger.error(f"[SSH Check] SSH connection could not be established after multiple attempts at {ssh_target}")
                 raise Exception("SSH connection failed")
 
             # Mount volume and start server
-            await channel.send("🔧 Starting Minecraft server setup (step-by-step)...")
+            await channel.send(":wrench: Starting Minecraft server setup (step-by-step)...")
             ssh_cmd_base = f"ssh -i {KEY_FILE_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ec2-user@{ssh_target}"
             commands = [
                 ("Install Java, screen, and netcat", "sudo dnf install -y java-21-amazon-corretto-devel screen nc"),
@@ -495,22 +495,22 @@ async def start_spot_instance():
                 ("Start Minecraft in screen", "cd /mnt/minecraft && screen -dmS minecraft sudo ./startMinecraft.sh")
             ]
             for desc, cmd in commands:
-                await channel.send(f"➡️ {desc}...")
+                await channel.send(f":arrow_forward: {desc}...")
                 logger.info(f"Running on instance: {cmd}")
                 result = await run_command(f"{ssh_cmd_base} '{cmd}'")
                 if result.returncode == 0:
                     logger.info(f"SUCCESS: {desc}")
-                    await channel.send(f"✅ {desc} succeeded.")
+                    await channel.send(f":white_check_mark: {desc} succeeded.")
                     # Only set minecraft_server_ready = True after the screen command
                     if desc == "Start Minecraft in screen":
                         minecraft_server_ready = True
                 else:
                     logger.error(f"FAILED: {desc} (code {result.returncode})\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}")
-                    await channel.send(f"❌ {desc} failed!\nSTDOUT: ```{result.stdout.strip()}```\nSTDERR: ```{result.stderr.strip()}```")
+                    await channel.send(f":x: {desc} failed!\nSTDOUT: ```{result.stdout.strip()}```\nSTDERR: ```{result.stderr.strip()}```")
                     raise Exception(f"Command failed: {cmd}\nError: {result.stderr}")
 
             # Wait for server to start accepting RCON connections
-            await channel.send("⏳ Waiting for Minecraft server to start (via RCON)...")
+            await channel.send(":hourglass: Waiting for Minecraft server to start (via RCON)...")
             server_ready = False
             for attempt in range(12):  # 2 minute timeout, 10s interval
                 logger.info(f"[Readiness Check] Attempt {attempt+1}: Checking RCON on {ssh_target}")
@@ -519,7 +519,7 @@ async def start_spot_instance():
                     # Get both IP and hostname
                     ip_address = await get_instance_property(instance, 'public_ip_address')
                     public_dns = await get_instance_property(instance, 'public_dns_name')
-                    await channel.send(f"✅ Server is ready!\nHostname: `{public_dns}`\nIP: `{ip_address}`\nConnect at: `{public_dns}:25565` or `{ip_address}:25565`")
+                    await channel.send(f":white_check_mark: Server is ready!\nHostname: `{public_dns}`\nIP: `{ip_address}`\nConnect at: `{public_dns}:25565` or `{ip_address}:25565`")
                     logger.info(f"[Readiness Check] Server is ready at {public_dns}:25565 (RCON responsive)")
                     server_ready = True
                     # Set last_player_seen to now when server is ready
@@ -528,7 +528,7 @@ async def start_spot_instance():
                     break
                 await asyncio.sleep(10)
             if not server_ready:
-                await channel.send("❌ Server did not start accepting RCON connections in time. Please check the logs or try again.")
+                await channel.send(":x: Server did not start accepting RCON connections in time. Please check the logs or try again.")
                 logger.warning(f"[Readiness Check] Server did not start accepting RCON connections in time at {ssh_target}:25565")
 
         finally:
@@ -539,7 +539,7 @@ async def start_spot_instance():
 
     except Exception as e:
         logger.error(f"Error starting spot instance: {e}")
-        await channel.send(f"❌ Error starting spot instance: {str(e)}")
+        await channel.send(f":x: Error starting spot instance: {str(e)}")
         await stop_spot_instance()
     finally:
         is_starting_or_stopping = False
@@ -581,7 +581,7 @@ async def stop_spot_instance():
     instance = await get_minecraft_instance()
     if not instance:
         logger.warning("No server instance found to stop")
-        await channel.send("❌ No server instance found")
+        await channel.send(":x: No server instance found")
         return
         
     try:
@@ -590,22 +590,22 @@ async def stop_spot_instance():
         
         # Gracefully stop Minecraft server if running
         if ip_address:
-            await channel.send("💾 Saving world data...")
+            await channel.send(":floppy_disk: Saving world data...")
             await rcon_command(instance, "say [Server] Server is shutting down, saving world...")
             await asyncio.sleep(1)
             await rcon_command(instance, "save-all")
-            await channel.send("🔄 Stopping Minecraft server...")
+            await channel.send(":arrows_counterclockwise: Stopping Minecraft server...")
             await rcon_command(instance, "stop")
             await asyncio.sleep(10)  # Wait for server to save and stop
         
         # Terminate the instance
-        await channel.send("🔄 Terminating EC2 instance...")
+        await channel.send(":arrows_counterclockwise: Terminating EC2 instance...")
         await instance.terminate()
-        await channel.send("✅ Instance terminated successfully")
+        await channel.send(":white_check_mark: Instance terminated successfully")
         
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
-        await channel.send(f"⚠️ Warning: Error during shutdown: {str(e)}")
+        await channel.send(f":grey_exclamation: Warning: Error during shutdown: {str(e)}")
         # Still try to terminate the instance even if Minecraft shutdown fails
         try:
             await instance.terminate()
@@ -723,11 +723,10 @@ async def status(ctx):
         cost_hour = spot_price
         cost_day = spot_price * 24
         cost_month = spot_price * 24 * 30
-        price_msg = (f"💸 Instance type: `{actual_instance_type}`\n"
-                     f"Spot price: `${spot_price:.4f}`/hr\n"
-                     f"= `${cost_day:.2f}`/day, `${cost_month:.2f}`/month")
+        price_msg = (f":moneybag: Instance type: `{actual_instance_type}`\n"
+                     f"Spot price: `${cost_day:.2f}`/day, `${cost_month:.2f}`/month")
     else:
-        price_msg = f"💸 Instance type: `{actual_instance_type}`\nSpot price: unavailable"
+        price_msg = f":moneybag: Instance type: `{actual_instance_type}`\nSpot price: unavailable"
     
     # Await launch_time property
     launch_time = await get_instance_property(instance, 'launch_time')
@@ -761,54 +760,54 @@ async def message(ctx, *, text: str):
     """Send a message to the Minecraft server. Usage: !message <text>"""
     instance = await get_minecraft_instance()
     if not instance or await get_instance_status() != "running":
-        await ctx.send("❌ Cannot send message: Server is not running")
+        await ctx.send(":x: Cannot send message: Server is not running")
         return
         
     try:
         response = await rcon_command(instance, f"say {text}")
         if response is not None:
-            await ctx.send(f"✅ Message sent to Minecraft server: `{text}`")
+            await ctx.send(f":white_check_mark: Message sent to Minecraft server: `{text}`")
         else:
-            await ctx.send("❌ Failed to send message: No response from server")
+            await ctx.send(":x: Failed to send message: No response from server")
     except Exception as e:
-        await ctx.send(f"❌ Failed to send message: {str(e)}")
+        await ctx.send(f":x: Failed to send message: {str(e)}")
 
 @bot.command()
 async def whitelist(ctx, username: str):
     """Add a player to the server whitelist. Usage: !whitelist <username>"""
     instance = await get_minecraft_instance()
     if not instance or await get_instance_status() != "running":
-        await ctx.send("❌ Cannot modify whitelist: Server is not running")
+        await ctx.send(":x: Cannot modify whitelist: Server is not running")
         return
     
     try:
         # Add player to whitelist
         response = await rcon_command(instance, f"whitelist add {username}")
         if response and "Added" in response:
-            await ctx.send(f"✅ Added `{username}` to the whitelist")
+            await ctx.send(f":white_check_mark: Added `{username}` to the whitelist")
         elif response and "already whitelisted" in response:
-            await ctx.send(f"ℹ️ `{username}` is already on the whitelist")
+            await ctx.send(f":grey_question: `{username}` is already on the whitelist")
         else:
-            await ctx.send(f"❌ Failed to add `{username}` to whitelist: {response}")
+            await ctx.send(f":x: Failed to add `{username}` to whitelist: {response}")
     except Exception as e:
-        await ctx.send(f"❌ Error modifying whitelist: {str(e)}")
+        await ctx.send(f":x: Error modifying whitelist: {str(e)}")
 
 @bot.command()
 async def ssh(ctx):
     """Get SSH connection information for the Minecraft server"""
     status = await get_instance_status()
     if status != "running":
-        await ctx.send(f"❌ Cannot get SSH info: Server is not running (status: {status})")
+        await ctx.send(f":x: Cannot get SSH info: Server is not running (status: {status})")
         return
         
     connection_info = await get_ssh_connection_info()
     if not connection_info:
-        await ctx.send("❌ Failed to get SSH connection information")
+        await ctx.send(":x: Failed to get SSH connection information")
         return
         
     # Create an embed with connection details
     embed = discord.Embed(
-        title="🔐 SSH Connection Details",
+        title=":closed_lock_with_key: SSH Connection Details",
         description="Use these details to connect to the Minecraft server for troubleshooting.",
         color=0x00ff00
     )
@@ -832,10 +831,10 @@ async def ssh(ctx):
     embed.add_field(
         name="Important Notes",
         value=(
-            "• The key file is required for SSH access\n"
-            "• Set file permissions: `chmod 600 minecraft-spot-key.pem`\n"
-            "• The server runs on Amazon Linux 2023\n"
-            "• Use `sudo` for administrative commands"
+            "- The key file is required for SSH access\n"
+            "- Set file permissions: `chmod 600 minecraft-spot-key.pem`\n"
+            "- The server runs on Amazon Linux 2023\n"
+            "- Use `sudo` for administrative commands"
         ),
         inline=False
     )
@@ -846,7 +845,7 @@ async def ssh(ctx):
 async def help(ctx):
     """Show help information about the bot and its commands"""
     help_embed = discord.Embed(
-        title="🎮 Minecraft Server Manager",
+        title=":video_game: Minecraft Server Manager",
         description=(
             "This bot manages a Minecraft server using AWS Spot Instances.\n\n"
             "**What are Spot Instances?**\n"
@@ -868,16 +867,16 @@ async def help(ctx):
     }
 
     commands_text = "\n\n".join(f"**{cmd}**\n{desc}" for cmd, desc in commands_info.items())
-    help_embed.add_field(name="📝 Commands", value=commands_text, inline=False)
+    help_embed.add_field(name=":page_with_curl: Commands", value=commands_text, inline=False)
 
     help_embed.add_field(
-        name="⚡ Quick Tips",
+        name=":purple_heart: Quick Tips",
         value=(
-            "• The server will automatically shut down after 5 minutes of inactivity\n"
-            "• You'll get a warning message if AWS needs to reclaim the spot instance\n"
-            "• World data is safely stored and persists between server restarts\n"
-            "• Players must be whitelisted before they can join the server\n"
-            "• Use !ssh to get connection details for troubleshooting"
+            "- The server will automatically shut down after 5 minutes of inactivity\n"
+            "- You'll get a warning message if AWS needs to reclaim the spot instance\n"
+            "- World data is safely stored and persists between server restarts\n"
+            "- Players must be whitelisted before they can join the server\n"
+            "- Use !ssh to get connection details for troubleshooting"
         ),
         inline=False
     )
@@ -889,23 +888,23 @@ async def debug(ctx):
     """Get detailed debug information about the Minecraft server"""
     instance = await get_minecraft_instance()
     if not instance:
-        await ctx.send("❌ No server instance found")
+        await ctx.send(":x: No server instance found")
         return
         
     status = await get_instance_status()
     if status != "running":
-        await ctx.send(f"❌ Server is not running (status: {status})")
+        await ctx.send(f":x: Server is not running (status: {status})")
         return
         
     try:
         ip_address = await get_instance_property(instance, 'public_ip_address')
         if not ip_address:
-            await ctx.send("❌ Could not get instance IP address")
+            await ctx.send(":x: Could not get instance IP address")
             return
             
         # Create an embed for the debug info
         embed = discord.Embed(
-            title="🔍 Server Debug Information",
+            title=":label: Server Debug Information",
             description="Detailed information about the Minecraft server instance",
             color=0x00ff00
         )
@@ -916,7 +915,7 @@ async def debug(ctx):
         instance_type = await get_instance_property(instance, 'instance_type')
         
         embed.add_field(
-            name="🖥️ Instance Information",
+            name=":desktop_computer: Instance Information",
             value=(
                 f"**ID:** `{instance_id}`\n"
                 f"**Type:** `{instance_type}`\n"
@@ -929,10 +928,10 @@ async def debug(ctx):
         # Check SSH connectivity
         ssh_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_FILE_PATH} ec2-user@{ip_address} 'echo SSH_OK'"
         ssh_result = await run_command(ssh_cmd)
-        ssh_status = "✅ Connected" if ssh_result.returncode == 0 else "❌ Not accessible"
+        ssh_status = ":white_check_mark: Connected" if ssh_result.returncode == 0 else ":x: Not accessible"
         
         embed.add_field(
-            name="🔐 SSH Status",
+            name=":closed_lock_with_key: SSH Status",
             value=ssh_status,
             inline=False
         )
@@ -940,10 +939,10 @@ async def debug(ctx):
         # Check mount status
         mount_cmd = f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i {KEY_FILE_PATH} ec2-user@{ip_address} 'mountpoint -q /mnt/minecraft && echo MOUNTED || echo NOT_MOUNTED'"
         mount_result = await run_command(mount_cmd)
-        mount_status = "✅ Mounted" if mount_result.stdout.strip() == "MOUNTED" else "❌ Not mounted"
+        mount_status = ":white_check_mark: Mounted" if mount_result.stdout.strip() == "MOUNTED" else ":x: Not mounted"
         
         embed.add_field(
-            name="💾 Storage Status",
+            name=":floppy_disk: Storage Status",
             value=mount_status,
             inline=False
         )
@@ -953,16 +952,16 @@ async def debug(ctx):
         try:
             players = await get_online_players(instance)
             if players is not None:
-                minecraft_status = f"✅ Running (Players: {len(players)})"
+                minecraft_status = f":white_check_mark: Running (Players: {len(players)})"
                 if players:
                     minecraft_status += f"\nOnline: {', '.join(players)}"
             else:
-                minecraft_status = "❌ Not responding to RCON"
+                minecraft_status = ":x: Not responding to RCON"
         except Exception as e:
-            minecraft_status = f"❌ Error: {str(e)}"
+            minecraft_status = f":x: Error: {str(e)}"
             
         embed.add_field(
-            name="🎮 Minecraft Status",
+            name=":video_game: Minecraft Status",
             value=minecraft_status,
             inline=False
         )
@@ -971,12 +970,12 @@ async def debug(ctx):
         
     except Exception as e:
         logger.error(f"Error in debug command: {e}")
-        await ctx.send(f"❌ Error getting debug information: {str(e)}")
+        await ctx.send(f":x: Error getting debug information: {str(e)}")
 
 @bot.command()
 async def suicide(ctx):
     """Terminate the bot process (systemd should restart it)."""
-    await ctx.send("☠️ Suicide command received. Terminating bot process. If systemd is configured, the bot should restart shortly.")
+    await ctx.send(":skull: Suicide command received. Terminating bot process. If systemd is configured, the bot should restart shortly.")
     logger.warning("Suicide command received from Discord. Terminating bot process.")
     await asyncio.sleep(1)  # Give Discord message a moment to send
     os._exit(0)
@@ -1044,7 +1043,7 @@ async def check_spot_interruption():
                             logger.warning("Spot interruption detected!")
                             channel = bot.get_channel(CHANNEL_ID)
                             await channel.send(
-                                "⚠️ **Spot Instance Interruption Detected!**\n"
+                                ":grey_exclamation: **Spot Instance Interruption Detected!**\n"
                                 "AWS needs this server. You have 2 minutes to save your work!\n"
                                 "The server will shut down automatically."
                             )

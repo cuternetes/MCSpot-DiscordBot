@@ -14,7 +14,7 @@ aws:
     - m6i.large
   subnet_id: "subnet-209b945a"
   region: "us-east-2"
-  key_pair_name: "minecraft-spot-key"
+  key_pair_name: "minecraft-spot-key-lightsail"
 minecraft:
   port: 25565
   rcon_port: 25575
